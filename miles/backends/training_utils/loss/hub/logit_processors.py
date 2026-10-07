@@ -134,9 +134,15 @@ def _iter_response_chunks(
                 total_length, response_length, qkv_format, max_seq_len
             )
 
+            # Reject inconsistent padding on the host before a CUDA index error.
+            assert end + 2 * chunk_size <= logits.size(0), (
+                f"sample {i}: local logits have {logits.size(0)} rows, "
+                f"but CP padding requires at least {end + 2 * chunk_size}"
+            )
+
             # Select both response spans in one operation. Nested slices each
             # allocate a full [local_sequence, vocab] gradient in backward;
-            # even an empty span can add another 30 GiB at 256K / CP4.
+            # even an empty span can add another full-size gradient.
             response_rows = [
                 torch.arange(
                     end + half * chunk_size + start - chunk[0],

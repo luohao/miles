@@ -97,3 +97,22 @@ def _check_response_selection(monkeypatch, cp_rank, cp_size, qkv_format, dtype, 
     for rows in _reference_rows(total_lengths, response_lengths, cp_rank, cp_size, qkv_format, max_seq_lens):
         expected_grad[rows] += 1
     assert torch.equal(logits.grad.squeeze(0), expected_grad)
+
+
+def test_inconsistent_cp_padding_fails_before_index_select(monkeypatch):
+    state = SimpleNamespace(cp=SimpleNamespace(rank=0, size=2))
+    monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: state)
+    args = Namespace(qkv_format="thd", true_on_policy_mode=False, allgather_cp=False)
+
+    with pytest.raises(AssertionError, match="sample 0: local logits have 7 rows.*requires at least 8"):
+        list(
+            logit_processors._iter_response_chunks(
+                torch.randn(1, 7, 5),
+                args=args,
+                unconcat_tokens=[torch.arange(16)],
+                total_lengths=[16],
+                response_lengths=[15],
+                include_response_indices=True,
+            )
+        )

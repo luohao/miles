@@ -392,7 +392,7 @@ def forward_only(
 
         # The pipeline retains each returned output during the next forward. Reduce
         # the terminal [sequence, vocabulary] logits now so two such buffers never
-        # coexist (about 30 GiB each at 256K / CP8); only the log-probs must survive.
+        # coexist; only the reduced per-token results must survive.
         # Megatron normally invokes this callback after leaving its forward autocast.
         with torch.autocast("cuda", enabled=collect_autocast_enabled, dtype=collect_autocast_dtype):
             result = collect(output_tensor, non_loss_data=True)
