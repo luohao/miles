@@ -134,20 +134,27 @@ def _iter_response_chunks(
                 total_length, response_length, qkv_format, max_seq_len
             )
 
-            logits_0, logits_1 = logits[end : end + chunk_size], logits[end + chunk_size : end + 2 * chunk_size]
+            # Select both response spans in one operation. Nested slices each
+            # allocate a full [local_sequence, vocab] gradient in backward;
+            # even an empty span can add another 30 GiB at 256K / CP4.
+            response_rows = [
+                torch.arange(
+                    end + half * chunk_size + start - chunk[0],
+                    end + half * chunk_size + stop - chunk[0],
+                    device=logits.device,
+                )
+                for half, (chunk, (start, stop)) in enumerate(zip(chunks_offset, logits_offset, strict=True))
+                if start < stop
+            ]
+            row_indices = (
+                torch.cat(response_rows) if response_rows else torch.empty(0, dtype=torch.long, device=logits.device)
+            )
+            logits_chunk = logits.index_select(0, row_indices)
             end += 2 * chunk_size
-
-            logits_0 = logits_0[logits_offset[0][0] - chunks_offset[0][0] : logits_offset[0][1] - chunks_offset[0][0]]
             tokens_0 = tokens[tokens_offset[0][0] : tokens_offset[0][1]]
-
-            logits_1 = logits_1[logits_offset[1][0] - chunks_offset[1][0] : logits_offset[1][1] - chunks_offset[1][0]]
             tokens_1 = tokens[tokens_offset[1][0] : tokens_offset[1][1]]
-
-            assert logits_0.size(0) == tokens_0.size(0), f"{logits_0.size(0)} vs {tokens_0.size(0)}"
-            assert logits_1.size(0) == tokens_1.size(0), f"{logits_1.size(0)} vs {tokens_1.size(0)}"
-
-            logits_chunk = torch.cat([logits_0, logits_1], dim=0)
             tokens_chunk = torch.cat([tokens_0, tokens_1], dim=0)
+            assert logits_chunk.size(0) == tokens_chunk.size(0), f"{logits_chunk.size(0)} vs {tokens_chunk.size(0)}"
             if include_response_indices:
                 prompt_length = total_length - response_length
                 response_indices = [
