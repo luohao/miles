@@ -21,7 +21,7 @@ from megatron.core.optimizer.muon import get_megatron_muon_optimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
-from megatron.core.utils import get_attr_wrapped_model, get_model_config
+from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
@@ -380,30 +380,7 @@ def forward_only(
         if use_rollout_sampling_mask:
             callback_kwargs["rollout_sampling_mask"] = rollout_sampling_mask
 
-        collect = partial(f, **callback_kwargs)
-        # Megatron only collects logits on the final physical and virtual stage.
-        vp_stage = (
-            get_attr_wrapped_model(model, "vp_stage")
-            if config.virtual_pipeline_model_parallel_size is not None
-            else None
-        )
-        if not mpu.is_pipeline_last_stage(ignore_virtual=False, vp_stage=vp_stage):
-            return output_tensor, collect
-
-        # The pipeline retains each returned output during the next forward. Reduce
-        # the terminal [sequence, vocabulary] logits now so two such buffers never
-        # coexist; only the reduced per-token results must survive.
-        # Megatron normally invokes this callback after leaving its forward autocast.
-        with torch.autocast("cuda", enabled=collect_autocast_enabled, dtype=collect_autocast_dtype):
-            result = collect(output_tensor, non_loss_data=True)
-        terminal_output = output_tensor.new_zeros(())
-        del output_tensor
-
-        def collect_result(_output, non_loss_data=True):
-            assert non_loss_data
-            return result
-
-        return terminal_output, collect_result
+        return output_tensor, partial(f, **callback_kwargs)
 
     # Turn on evaluation mode which disables dropout.
     for model_module in model:
@@ -415,9 +392,6 @@ def forward_only(
         custom_before_log_prob_hook = load_function(args.custom_megatron_before_log_prob_hook_path)
         custom_before_log_prob_hook(args, model, store_prefix)
 
-    # Keep the caller's precision context when collecting before the schedule returns.
-    collect_autocast_enabled = torch.is_autocast_enabled("cuda")
-    collect_autocast_dtype = torch.get_autocast_dtype("cuda")
     forward_backward_func = get_forward_backward_func()
     # Don't care about timing during evaluation
     config.timers = None
